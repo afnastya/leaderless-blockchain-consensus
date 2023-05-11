@@ -7,49 +7,36 @@
 #include <functional>
 #include <cstdlib>
 #include <memory>
+#include <fstream>
 
 #include <../src/core/message.hpp>
 #include <../src/network/netmanager.hpp>
 #include <../src/network/network.hpp>
 #include <../src/consensus/DBFT.hpp>
 #include <../src/node/node.hpp>
+#include <../src/simulation/simulation.hpp>
 
-void sanity_check(size_t n, size_t failstop_cnt = 0) {
-    ManualNetwork net;
-    std::vector<INode*> nodes;
-    for (size_t i = 0; i + failstop_cnt < n; ++i) {
-        nodes.emplace_back(new Node(i, net));
-    }
 
-    for (size_t i = nodes.size(); i < n; ++i) {
-        nodes.emplace_back(new FailStopNode(i, net));
-    }
+std::ofstream result_file("../tests/test_results/DBFT_result.csv", std::ios::app);
 
-    for (size_t i = 0; i < n; ++i) {
-        for (size_t j = 0; j < 5; ++j) {
-            nodes[i]->add_tx(i * 5 + j);
-        }
-    }
+void sanity_check(size_t n, size_t f = 0, size_t batch_size = 5) {
+    TimerNetwork net;
+    SimulationConfig config = {net, Ok, n, f, {3, batch_size}};
 
-    for (size_t i = 0; i < n; ++i) {
-        nodes[i]->run(3);
-    }
+    Simulation sim(config);
 
-    net.run_detached();
-
-    for (size_t i = 0; i < n; ++i) {
-        nodes[i]->join();
-    }
+    sim.run();
+    sim.join();
 
     net.shutdown();
 
-    Node* expected_node = dynamic_cast<Node*>(nodes[0]);   
-    for (size_t i = 1; i < n; ++i) {
+    Node* expected_node = sim.get_fair_node();
+    auto nodes = sim.get_nodes(); 
+    for (size_t i = 0; i < n; ++i) {
         Node* node = dynamic_cast<Node*>(nodes[i]);
         if (!node) {
             continue;
         }
-
 
         Chain& expected_chain = expected_node->get_chain();
         Chain& chain = node->get_chain();
@@ -65,6 +52,19 @@ void sanity_check(size_t n, size_t failstop_cnt = 0) {
     }
 }
 
+TEST(DBFT, JustWorks) {
+    for (size_t n = 4; n < 16; ++n) {
+        sanity_check(n, 0);
+    }
+}
+
+TEST(DBFT, Batch) {
+    size_t n = 10;
+    for (size_t batch = 1; batch < 32; batch += 5) {
+        sanity_check(n, 3, batch);
+    }
+}
+
 TEST(DBFT, FailStop) {
     for (size_t n = 4; n < 16; ++n) {
         for (size_t failstop_cnt = 0; failstop_cnt <= (n - 1) / 3; ++failstop_cnt) {
@@ -74,73 +74,50 @@ TEST(DBFT, FailStop) {
     }
 }
 
-double run_simulation(size_t n, size_t failstop_cnt = 0) {
-    ManualNetwork net;
-    std::vector<INode*> nodes;
-    for (size_t i = 0; i + failstop_cnt < n; ++i) {
-        nodes.emplace_back(new Node(i, net));
-    }
+void run_simulation(SimulationType sim_type, size_t n, size_t f, size_t batch_size, size_t run_id) {
+    TimerNetwork net;
+    SimulationConfig config = {net, sim_type, n, f, {1, batch_size}};
 
-    for (size_t i = nodes.size(); i < n; ++i) {
-        nodes.emplace_back(new FailStopNode(i, net));
-    }
+    Simulation sim(config);
 
-    for (size_t i = 0; i < n; ++i) {
-        for (size_t j = 0; j < 5; ++j) {
-            nodes[i]->add_tx(i * 5 + j);
-        }
-    }
-
-    for (size_t i = 0; i < n; ++i) {
-        nodes[i]->run(1);
-    }
-
-    net.run_detached();
-
-    for (size_t i = 0; i < n; ++i) {
-        nodes[i]->join();
-    }
+    sim.run();
+    sim.join();
 
     net.shutdown();
 
-    Node* expected_node = dynamic_cast<Node*>(nodes[0]);
-    double runtime_sum = 0;
-    for (size_t i = 1; i < n; ++i) {
-        Node* node = dynamic_cast<Node*>(nodes[i]);
-        if (!node) {
-            continue;
-        }
-
-        runtime_sum += node->get_runtime();
-    }
-
-    return runtime_sum / (n - failstop_cnt); 
+    sim.write_results(result_file, run_id);
 }
 
 TEST(DBFT, Simulation) {
     for (size_t n = 4; n <= 16; n += 3) {
-        for (size_t i = 0; i < 100; ++i) {
-            double time = run_simulation(n, 0);
-            std::cout << time << " ";
+        for (size_t i = 0; i < 10; ++i) {
+            run_simulation(Ok, n, 0, 1, i);
         }
-        std::cout << std::endl;
+    }
+}
+
+TEST(DBFT, SimulationBatch) {
+    size_t n = 16;
+    for (size_t batch = 5; batch <= 45; batch += 5) {
+        for (size_t i = 0; i < 10; ++i) {
+            run_simulation(Batch, n, 0, batch, i);
+        }
     }
 }
 
 TEST(DBFT, SimulationFailStop) {
     size_t n = 16;
-    for (size_t t = 0; t <= 5; ++t) {
-        for (size_t i = 0; i < 100; ++i) {
-            double time = run_simulation(n, t);
-            std::cout << time << " ";
+    for (size_t f = 0; f <= (n - 1) / 3; ++f) {
+        for (size_t i = 0; i < 10; ++i) {
+            run_simulation(FailStop, n, f, 1, i);
         }
-        std::cout << std::endl;
     }
 }
 
 int main(int argc, char **argv) {
-    FLAGS_log_dir = "./log";
-    google::InitGoogleLogging(argv[0]);
+    // FLAGS_log_dir = "./log";
+    FLAGS_v = -1;
+    // google::InitGoogleLogging(argv[0]);
     // google::SetCommandLineOption("GLOG_minloglevel", "4");
 
     ::testing::InitGoogleTest(&argc, argv);

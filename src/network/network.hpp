@@ -7,10 +7,10 @@
 #include "../core/message.hpp"
 #include "channel.hpp"
 
-class INetwork {
+class INetwork { // add run()
 public:
-    virtual Receiver<Message> add_node(uint32_t node_id) = 0;
-    virtual std::unordered_map<uint32_t, Sender<Message>> get_nodes() = 0;
+    virtual IChannel& add_node(uint32_t node_id) = 0;
+    virtual std::unordered_map<uint32_t, Sender> get_nodes() = 0;
     virtual ~INetwork() = default;
 };
 
@@ -19,10 +19,10 @@ class ManualNetwork : public INetwork {
 public:
     // Network();
     void run_detached();
-    Receiver<Message> add_node(uint32_t node_id) override;
-    Sender<Message> get_net_sender();
+    IChannel& add_node(uint32_t node_id) override;
+    Sender get_net_sender();
     bool check_connection(const Message& msg) const;
-    std::unordered_map<uint32_t, Sender<Message>> get_nodes() override;
+    std::unordered_map<uint32_t, Sender> get_nodes() override;
     void shutdown();
 
     void shuffle(); // re-do
@@ -31,8 +31,30 @@ public:
     void run();
 
 private:
-    Channel<Message> queue_;
-    std::unordered_map<uint32_t, Channel<Message>> node_channels_;
+    Channel queue_;
+    std::unordered_map<uint32_t, Channel> node_channels_;
     std::thread msg_processor_;
 
+};
+
+
+class Network : public INetwork {
+public:
+    IChannel& add_node(uint32_t node_id) override;
+    std::unordered_map<uint32_t, Sender> get_nodes() override;
+    void shutdown();
+
+private:
+    std::unordered_map<uint32_t, Channel> node_channels_;
+};
+
+
+class TimerNetwork : public INetwork {
+public:
+    IChannel& add_node(uint32_t node_id) override;
+    std::unordered_map<uint32_t, Sender> get_nodes() override;
+    void shutdown();
+
+private:
+    std::unordered_map<uint32_t, TimerChannel> node_channels_;
 };

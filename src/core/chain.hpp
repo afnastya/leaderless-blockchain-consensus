@@ -8,6 +8,10 @@ struct Block {
     uint32_t block_id;
     std::vector<Transaction> data;
 
+    size_t size() {
+        return data.size();
+    }
+
     // imitation of identification of conflicts, just to test algorithm
     bool conflicts(Transaction& other_tx) {
         static const int MOD = 73;

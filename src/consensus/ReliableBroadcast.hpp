@@ -8,10 +8,10 @@
 class ReliableBroadcast {
 private:
     enum State {
-        INIT = 0,
-        ECHO = 1,
-        READY = 2,
-        DELIVERED = 3,
+        RB_INIT = 0,
+        RB_ECHO = 1,
+        RB_READY = 2,
+        RB_DELIVERED = 3,
     };
 
     struct Instance {
@@ -23,6 +23,7 @@ public:
     ReliableBroadcast(int nodes_cnt, INetManager& net);
     void broadcast(const json& data);
     std::optional<json> process_msg(Message msg);
+    bool is_delivered(const json& data);
 
 private:
     Message make_init(const json& data);

@@ -4,17 +4,12 @@
 
 using Transaction = uint64_t;
 
-// struct Transaction {
-//     std::string data;
-// };
-
-// Transaction tx_gen() {
-//     // random data
-// }
+Transaction gen_tx();
 
 class TransactionPool {
 public:
     Transaction get_tx() {
+        assert(!pool_.empty());
         Transaction tx = std::move(pool_.front());
         pool_.pop_front();
         return tx;

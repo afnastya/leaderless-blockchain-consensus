@@ -23,15 +23,14 @@ public:
   void send(Message) override {
   }
 
-  std::optional<Message> receive() override {
-    if (queue.empty()) {
-      return std::nullopt;
-    }
+  std::optional<Message> receive() {
+    return std::nullopt;
+  }
 
-    Message msg = std::move(queue.front());
-    queue.pop_front();
+  void handle_messages() override {
+  }
 
-    return msg;
+  void stop_receive() override {
   }
 
   void broadcast(Message) override {
@@ -48,36 +47,85 @@ private:
   std::deque<Message> queue;
 };
 
+std::deque<Message> get_RB_msgs(int n, int t) {
+  static auto get_data = [](int value) { return json{{"value", value}}; };
+  std::deque<Message> RB_msgs;
+
+  for (int i = 0; i + t < n; ++i) {
+    RB_msgs.push_back(Message("RB_ECHO", get_data(0), i));
+  }
+
+  for (int i = 0; i + t < n; ++i) {
+    RB_msgs.push_back(Message("RB_READY", get_data(0), i));
+  }
+
+  return RB_msgs;
+}
+
 void sanity_check(int n, int t) {
-  auto get_data = [](int value) { return json{{"value", value}}; };
+  static auto get_data = [](int value) { return json{{"value", value}}; };
 
   FakeNetManager net_manager;
   ReliableBroadcast RB(n, net_manager);
 
   RB.broadcast(get_data(0));
 
+  auto RB_msgs = get_RB_msgs(n, t);
+
   for (int i = 0; i + t < n; ++i) {
-    auto res = RB.process_msg(Message("RB_ECHO", get_data(0), i));
+    auto msg = std::move(RB_msgs.front());
+    RB_msgs.pop_front();
+    auto res = RB.process_msg(msg);
     EXPECT_EQ(res, std::nullopt);
   }
 
   for (int i = 0; i + t + 1 < n; ++i) {
-    auto res = RB.process_msg(Message("RB_READY", get_data(0), i));
+    auto msg = std::move(RB_msgs.front());
+    RB_msgs.pop_front();
+    auto res = RB.process_msg(msg);
     EXPECT_EQ(res, std::nullopt);
   }
 
-  auto res = RB.process_msg(Message("RB_READY", get_data(0), n - 1));
+  auto msg = std::move(RB_msgs.front());
+  RB_msgs.pop_front();
+  auto res = RB.process_msg(msg);
   ASSERT_NE(res, std::nullopt);
   EXPECT_EQ(res.value(), get_data(0));
+  EXPECT_EQ(RB.is_delivered(get_data(0)), true);
 }
 
 
 TEST(ReliableBroadcast, JustWorks) {
-  sanity_check(4, 1);
-  sanity_check(5, 1);
-  sanity_check(6, 1);
-  sanity_check(10, 3);
-  sanity_check(49, 16);
+  for (size_t n = 4; n < 50; n += 3) {
+    sanity_check(n, (n - 1) / 3);
+  }
+}
+
+void shuffle_check(int n, int t) {
+  static auto get_data = [](int value) { return json{{"value", value}}; };
+
+  FakeNetManager net_manager;
+  ReliableBroadcast RB(n, net_manager);
+
+  RB.broadcast(get_data(0));
+
+  auto RB_msgs = get_RB_msgs(n, t);
+  std::mt19937 engine(std::random_device{}());
+  std::shuffle(std::begin(RB_msgs), std::end(RB_msgs), engine);
+
+  while (!RB_msgs.empty()) {
+    auto msg = std::move(RB_msgs.front());
+    RB_msgs.pop_front();
+    auto res = RB.process_msg(msg);
+  }
+
+  EXPECT_EQ(RB.is_delivered(get_data(0)), true);
+}
+
+TEST(ReliableBroadcast, Shuffle) {
+  for (size_t n = 4; n < 50; n += 3) {
+    shuffle_check(n, (n - 1) / 3);
+  }
 }
 
 

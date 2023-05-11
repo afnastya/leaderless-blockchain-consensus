@@ -4,12 +4,12 @@
 #include <deque>
 // #include "netmanager.hpp"
 
-Receiver<Message> ManualNetwork::add_node(uint32_t node_id) {
+///////////////////////////////////////     ManualNetwork     /////////////////////////////////////////////
+
+IChannel& ManualNetwork::add_node(uint32_t node_id) {
     node_channels_[node_id];
-    auto receiver = node_channels_[node_id].get_receiver();
 
-
-    return receiver;
+    return node_channels_[node_id];
 }
 
 
@@ -27,12 +27,12 @@ void ManualNetwork::run_detached() {
     msg_processor_ = std::move(thread);
 }
 
-Sender<Message> ManualNetwork::get_net_sender() {
+Sender ManualNetwork::get_net_sender() {
     return queue_.get_sender();
 }
 
-std::unordered_map<uint32_t, Sender<Message>> ManualNetwork::get_nodes() {
-    std::unordered_map<uint32_t, Sender<Message>> nodes;
+std::unordered_map<uint32_t, Sender> ManualNetwork::get_nodes() {
+    std::unordered_map<uint32_t, Sender> nodes;
     for (const auto& node : node_channels_) {
         nodes.emplace(node.first, queue_.get_sender());
     }
@@ -49,14 +49,13 @@ void ManualNetwork::shutdown() {
 }
 
 bool ManualNetwork::step() {
-    static Receiver<Message> receiver_ = queue_.get_receiver();;
-    if (receiver_.size() == 0) {
+    if (queue_.size() == 0) {
         return false;
     }
 
-    Message msg = receiver_.receive().value();
+    Message msg = queue_.receive().value();
     if (check_connection(msg)) {
-        node_channels_[msg.to].get_sender().send(std::move(msg));
+        node_channels_[msg.to].send(std::move(msg));
     }
 
     return true;
@@ -73,33 +72,76 @@ size_t ManualNetwork::step_n(size_t cnt) {
 }
 
 void ManualNetwork::run() {
-    auto receiver = queue_.get_receiver();
     std::optional<Message> opt_msg;
-    while ((opt_msg = receiver.receive()) != std::nullopt) {
+    while ((opt_msg = queue_.receive()) != std::nullopt) {
         Message msg = opt_msg.value();
         if (!check_connection(msg)) {
             continue;
         }
 
-        node_channels_[msg.to].get_sender().send(std::move(msg));
+        node_channels_[msg.to].send(std::move(msg));
     }
 }
 
 void ManualNetwork::shuffle() {
     std::deque<Message> extracted;
-    auto receiver = queue_.get_receiver();
 
-    for (size_t i = 0; i < receiver.size(); ++i) {
-        Message msg = receiver.receive().value();
+    for (size_t i = 0; i < queue_.size(); ++i) {
+        Message msg = queue_.receive().value();
         extracted.push_back(std::move(msg));
     }
 
-    auto engine = std::default_random_engine{};
+    std::mt19937 engine(std::random_device{}());
     std::shuffle(std::begin(extracted), std::end(extracted), engine);
 
-    auto sender = queue_.get_sender();
     while (!extracted.empty()) {
-        sender.send(std::move(extracted.front()));
+        queue_.send(std::move(extracted.front()));
         extracted.pop_front();
+    }
+}
+
+
+///////////////////////////////////////     Network     //////////////////////////////////////////////
+
+IChannel& Network::add_node(uint32_t node_id) {
+    node_channels_[node_id];
+
+    return node_channels_[node_id];
+}
+
+std::unordered_map<uint32_t, Sender> Network::get_nodes() {
+    std::unordered_map<uint32_t, Sender> nodes;
+    for (const auto& node : node_channels_) {
+        nodes.emplace(node.first, node_channels_[node.first].get_sender());
+    }
+    return nodes;
+}
+
+void Network::shutdown() {
+    for (auto& node : node_channels_) {
+        node.second.close();
+    }
+}
+
+
+/////////////////////////////////////     TimerNetwork     ///////////////////////////////////////////
+
+IChannel& TimerNetwork::add_node(uint32_t node_id) {
+    node_channels_[node_id];
+
+    return node_channels_[node_id];
+}
+
+std::unordered_map<uint32_t, Sender> TimerNetwork::get_nodes() {
+    std::unordered_map<uint32_t, Sender> nodes;
+    for (const auto& node : node_channels_) {
+        nodes.emplace(node.first, node_channels_[node.first].get_sender());
+    }
+    return nodes;
+}
+
+void TimerNetwork::shutdown() {
+    for (auto& node : node_channels_) {
+        node.second.close();
     }
 }

@@ -8,11 +8,11 @@
 #include "../network/netmanager.hpp"
 #include "../network/network.hpp"
 #include "../consensus/DBFT.hpp"
-// #include "../src/logger.cpp"
+#include "../simulation/structs.hpp"
 
 class INode {
 public:
-    virtual void run(size_t max_blocks) = 0;
+    virtual void run() = 0;
     virtual void join() = 0;
     virtual void add_tx(Transaction tx) = 0;
     virtual ~INode() = default;
@@ -21,13 +21,19 @@ public:
 
 class Node : public INode {
 public:
-    Node(uint32_t id, INetwork& net) : id_(id) {
-        net_manager_ = new NetManager(id, net.add_node(id), net);
+    Node(uint32_t id, INetwork& net, SimulationData sim_data) : id_(id), sim_data_(sim_data) {
+        auto handler = [this](Message msg) {
+            this->handle_message(msg);
+        };
+
+        net_manager_ = new NetManager(id, net.add_node(id), net, handler);
     }
 
-    void run(size_t max_blocks);
+    void run() override;
 
-    void add_tx(Transaction tx) {
+    void handle_message(Message msg);
+
+    void add_tx(Transaction tx) override {
         pool_.add_tx(tx);
     }
 
@@ -35,7 +41,7 @@ public:
         return chain_;
     }
 
-    void join() {
+    void join() override {
         msg_processor_.join();
     }
 
@@ -44,11 +50,16 @@ public:
     }
 
     double get_runtime() {
-        assert(runtime_ != 0);
-        return runtime_;
+        assert(metrics_.runtime != 0);
+        return metrics_.runtime;
     }
 
-    ~Node() {
+    ConsensusMetrics get_metrics() {
+        assert(metrics_.runtime != 0);
+        return metrics_;
+    }
+
+    ~Node() override {
         delete net_manager_;
     }
 
@@ -60,16 +71,17 @@ private:
     TransactionPool pool_;
     Chain chain_;
     std::unordered_map<uint32_t, DBFT> DBFTs_;
-    double runtime_{0};
+    ConsensusMetrics metrics_;
+    SimulationData sim_data_;
 };
 
 class FailStopNode : public INode {
 public:
-    FailStopNode(uint32_t id, INetwork& net) : id_(id) {
+    FailStopNode(uint32_t id, INetwork& net, SimulationData sim_data) : id_(id), sim_data_(sim_data) {
         net_manager_ = new NetManager(id, net.add_node(id), net);
     }
 
-    void run(size_t) override {
+    void run() override {
         net_manager_->update_nodes();
         net_manager_->close();
     }
@@ -81,6 +93,10 @@ public:
         pool_.add_tx(tx);
     }
 
+    uint32_t get_id() const {
+        return id_;
+    }
+
     ~FailStopNode() {
         delete net_manager_;
     }
@@ -90,4 +106,6 @@ private:
     INetManager* net_manager_;
 
     TransactionPool pool_;
+
+    SimulationData sim_data_;
 };

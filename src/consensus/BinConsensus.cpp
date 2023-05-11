@@ -5,7 +5,7 @@
 
 
 BinConsensus::BinConsensus(uint32_t nodes_cnt, INetManager& net, json msg_base)
-    : nodes_cnt_(nodes_cnt), net_(net), msg_base_(msg_base), RB_(nodes_cnt, net) {
+    : nodes_cnt_(nodes_cnt), net_(net), msg_base_(msg_base), BV_(nodes_cnt, net) {
     state_ = Uninvoked;
 }
 
@@ -31,7 +31,7 @@ bool BinConsensus::process_msg(Message msg) {
         return true;
     }
 
-    if (msg.type.starts_with("RB_")) {
+    if (msg.type == "BV") {
         process_bv_broadcast(msg);
     } else if (msg.type == "BinConsensus_AUX") {
         process_AUX(msg);
@@ -39,15 +39,21 @@ bool BinConsensus::process_msg(Message msg) {
 
     continue_if_ready();
 
-    DLOG_IF(INFO, state_ == Consensus) << net_.get_id() << " CONSENSUS round: " 
-                                      << round_ << " decision: " << get_decision() << std::endl;
+    if (state_ == Consensus) {
+        DVLOG(5) << net_.get_id() << " " << msg_base_ << " CONSENSUS round: " 
+                 << res_metrics_.rounds_number << " decision: " << get_decision() << std::endl;
+    }
 
     return state_ == Consensus;
 }
 
+bool BinConsensus::reached_consensus() {
+    return state_ == Consensus;
+}
+
 bool BinConsensus::get_decision() {
-    assert(state_ == Consensus);
-    return est_;
+    assert(decided_);
+    return res_metrics_.decision;
 }
 
 
@@ -81,34 +87,37 @@ void BinConsensus::add_binvalue(uint32_t round, uint32_t value) {
 
 void BinConsensus::phase_1() {
     json EST_data(msg_base_);
-    EST_data["author"] = net_.get_id();
     EST_data["round"] = round_;
     EST_data["value"] = est_;
 
-    DLOG(INFO) << net_.get_id() << " phase_1 BvBroadcast EST: " << EST_data;
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_1 BvBroadcast EST: " << EST_data;
 
-    RB_.broadcast(EST_data); // BV-broadcast est_;
+    BV_.broadcast(EST_data); // BV-broadcast est_;
     state_ = BvBroadcast;
+    if (decided_) {
+        add_binvalue(round_, est_);
+    }
 
     continue_if_ready();
 }
 
 
 void BinConsensus::process_bv_broadcast(Message msg) {
-    DLOG(INFO) << net_.get_id() << " got msg: " << msg;
+    DVLOG(6) << net_.get_id() << " " << msg_base_ << " got msg: " << msg;
 
     if (!msg.data.contains("round") || msg.data["round"] < round_) {
         return;
     }
 
-    auto RB_res = RB_.process_msg(std::move(msg));
-    if (!RB_res.has_value()) {
+    auto BV_res = BV_.process_msg(std::move(msg));
+    if (!BV_res.has_value()) {
         return;
     }
 
     // BV-delivery
     // add to bin_values_[round_] upon BV-delivery
-    json delivered_data = RB_res.value();
+    json delivered_data = BV_res.value();
+    DVLOG(6) << net_.get_id() << " " << msg_base_ << " bv-delivered: " << delivered_data;
     if (!delivered_data.contains("round") || delivered_data["round"] < round_
         || !delivered_data.contains("value")) {
         return;
@@ -124,17 +133,21 @@ void BinConsensus::phase_2() {
     AUX_data["round"] = round_;
     AUX_data["binvalues"] = rounds_[round_].bin_values;
 
-    DLOG(INFO) << net_.get_id() << " phase_2 broadcast AUX: " << AUX_data;
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_2 broadcast AUX: " << AUX_data;
 
     net_.broadcast(Message("BinConsensus_AUX", AUX_data));
     state_ = Broadcast;
 
-    continue_if_ready();
+    if (decided_) {
+        phase_3(static_cast<BinValues>(rounds_[round_].bin_values));
+    } else {
+        continue_if_ready();
+    }
 }
 
 
 void BinConsensus::process_AUX(Message msg) {
-    DLOG(INFO) << net_.get_id() << " got msg: " << msg;
+    DVLOG(6) << net_.get_id() << " " << msg_base_ <<" got msg: " << msg;
 
     if (msg.type != "BinConsensus_AUX") {
         return;
@@ -151,24 +164,38 @@ void BinConsensus::process_AUX(Message msg) {
     }
 
     uint32_t bin_values = msg.data["binvalues"];
-    rounds_[round].received_AUXes.insert(msg.from);
-    rounds_[round].values |= bin_values;
+    if (bin_values > BinValues::Both || bin_values == None) {
+        return;
+    }
+
+    if (!rounds_[round].received_AUXes.contains(msg.from)) {
+        rounds_[round].received_AUXes.insert(msg.from);
+        ++rounds_[round].values[bin_values];
+    }
 }
 
 
 void BinConsensus::phase_3(BinValues values) {
     uint32_t b = round_ % 2;
 
-    DLOG(INFO) << net_.get_id() << " phase_3" << std::endl;
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_3" << std::endl;
 
     if (values == Zero || values == One) {
         inc_round(values / 2);
-        if (values / 2 == b) {
-            state_ = Consensus;
-            return;
+        if (!decided_ && values / 2 == b) {
+            set_decision();
         }
     } else {
         inc_round(b);
+    }
+
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " finished round: " << round_ - 1
+             << " est: " << est_ << " bin_values: " << rounds_[round_ - 1].bin_values
+             << " values: " << values;
+
+    if (decided_ && round_ >= res_metrics_.rounds_number + 2) {
+        state_ = Consensus;
+        return;
     }
 
     phase_1();
@@ -184,11 +211,106 @@ void BinConsensus::continue_if_ready() {
             return;
         }
 
-        if (round.values != 0) { // make sure values in bin_values
-            DLOG_IF(WARNING, (round.values & round.bin_values) != round.values) << net_.get_id()
-                << " values " << round.values <<  " not in bin_values " << round.bin_values
-                << "! round: " << round_ << std::endl;
-            phase_3(static_cast<BinValues>(round.values & round.bin_values));
+        if (round.bin_values != Both) {
+            if (round.values[round.bin_values] < nodes_cnt_ - (nodes_cnt_ - 1) / 3) {
+                return;
+            }
+
+            phase_3(static_cast<BinValues>(round.bin_values));
+            return;
         }
+
+        uint32_t values = 0;
+        for (uint32_t i = BinValues::Zero; i <= BinValues::Both; ++i) {
+            if (round.values[i] > 0) {
+                values |= i;
+            }
+        }
+        phase_3(static_cast<BinValues>(values));
     }
+}
+
+void BinConsensus::set_decision() {
+    // time to-do
+    assert(!decided_);
+
+    decided_ = true;
+    res_metrics_.decision = est_;
+    res_metrics_.rounds_number = round_;
+
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " DECIDED round: " 
+             << res_metrics_.rounds_number << " decision: " << get_decision() << std::endl;
+}
+
+
+BVbroadcast::BVbroadcast(int nodes_cnt, INetManager& net) : nodes_cnt_(nodes_cnt), net_(net) {
+}
+
+void BVbroadcast::broadcast(const json& data) {
+    if (!data.contains("round") || !data.contains("value")) {
+        return;
+    }
+
+    uint32_t round = data["round"];
+    uint32_t value = data["value"];
+
+    Instance& instance = get_instance(round);
+    if ((value & 1) != value || instance.states_[value] >= Broadcast) {
+        return;
+    }
+
+    net_.broadcast(Message("BV", data));
+    instance.states_[value] = Broadcast;
+}
+
+std::optional<json> BVbroadcast::process_msg(Message msg) {
+    DVLOG(6) << net_.get_id() << " bv-process" << msg << std::endl;
+    if (!check_type(msg)) {
+        return std::nullopt;
+    }
+
+    uint32_t value = msg.data["value"];
+    DVLOG(6) << net_.get_id() << " " << msg << " value: " << value<< std::endl;
+    if ((value & 1) != value) {
+        return std::nullopt;
+    }
+
+    uint32_t round = msg.data["round"];
+    DVLOG(6) << net_.get_id() << " " << msg << " round: " << round << std::endl;
+    Instance& instance = get_instance(round);
+    if (instance.states_[value] == Delivered) {
+        return std::nullopt;
+    }
+
+    instance.received_from_[value].insert(msg.from);
+    json a = {{"received_from", instance.received_from_[value]}};
+    DVLOG(6) << net_.get_id() << " " << msg << " " << a << std::endl; 
+    if (instance.received_from_[value].size() >= (nodes_cnt_ - 1) / 3 + 1
+        && instance.states_[value] < Broadcast) {
+            net_.broadcast(msg);
+            instance.states_[value] = Broadcast;
+    }
+
+    if (instance.received_from_[value].size() >= (nodes_cnt_ - 1) / 3 * 2 + 1) {
+        instance.states_[value] = Delivered;
+        return msg.data;
+    }
+
+    return std::nullopt;
+}
+
+bool BVbroadcast::check_type(const Message& msg) const {
+    if (msg.type != "BV") {
+        return false;
+    }
+
+    return msg.data.contains("round") && msg.data.contains("value");
+}
+
+BVbroadcast::Instance& BVbroadcast::get_instance(uint32_t r) {
+    if (instances_.size() <= r) {
+        instances_.resize(r + 1);
+    }
+
+    return instances_[r];
 }
