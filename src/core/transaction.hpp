@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <deque>
 
 using Transaction = uint64_t;

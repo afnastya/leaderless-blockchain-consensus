@@ -3,17 +3,28 @@
 void Node::run() {
     net_manager_->update_nodes();
     std::thread thread([this]() {
+        if (sim_data_.role == FailStop) {
+            return;
+        }
+
         auto startTime = std::chrono::system_clock::now();
 
         DBFTs_.insert({
             0,
-            DBFT(0, net_manager_->get_nodes_cnt(), sim_data_.batch_size, *net_manager_, pool_)
+            DBFT(0, 
+                    net_manager_->get_nodes_cnt(), 
+                    sim_data_.batch_size, 
+                    *net_manager_, 
+                    pool_,
+                    sim_data_.role)
         });
 
-        net_manager_->handle_messages();
+        if (is_fair()) {
+            net_manager_->handle_messages();
+        }
 
         auto endTime = std::chrono::system_clock::now();
-        metrics_.runtime = std::chrono::duration<double>(endTime - startTime).count();
+        runtime_ = std::chrono::duration<double>(endTime - startTime).count();
     });
 
     msg_processor_ = std::move(thread);
@@ -38,9 +49,9 @@ void Node::handle_message(Message msg) {
 
     if (DBFTs_.at(block_id).process_msg(msg)) {
         Block new_block = DBFTs_.at(block_id).get_block(chain_);
-        metrics_.block_size = new_block.size();
+        metrics_ = DBFTs_.at(block_id).get_metrics();
         chain_.add_block(new_block);
-        DLOG(INFO) << id_ << " BLOCK #" << block_id << ": " << new_block << std::endl;
+        // DLOG(INFO) << id_ << " BLOCK #" << block_id << ": " << new_block << std::endl;
 
         if (chain_.get_height() >= sim_data_.max_blocks) {
             net_manager_->stop_receive();

@@ -39,6 +39,9 @@ public:
   void close() override {
   }
 
+  void set_timer(uint32_t, std::function<void()>) override {
+  }
+
   void add_message(const Message& msg) {
     queue.push_back(std::move(msg));
   }

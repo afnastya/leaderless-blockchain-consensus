@@ -15,3 +15,7 @@ add_test(NAME test_BinCon COMMAND test_BinCon)
 add_executable(test_DBFT test_DBFT.cpp)
 target_link_libraries(test_DBFT ${PROJECT_NAME} GTest::gtest_main)
 add_test(NAME test_DBFT COMMAND test_DBFT)
+
+# Simulations
+add_executable(run_simulation run_simulation.cpp)
+target_link_libraries(run_simulation ${PROJECT_NAME} GTest::gtest_main)

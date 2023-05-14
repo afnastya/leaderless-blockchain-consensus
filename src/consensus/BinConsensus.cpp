@@ -4,8 +4,8 @@
 #include <glog/logging.h>
 
 
-BinConsensus::BinConsensus(uint32_t nodes_cnt, INetManager& net, json msg_base)
-    : nodes_cnt_(nodes_cnt), net_(net), msg_base_(msg_base), BV_(nodes_cnt, net) {
+BinConsensus::BinConsensus(uint32_t nodes_cnt, INetManager& net, json msg_base, bool is_psync)
+    : nodes_cnt_(nodes_cnt), net_(net), msg_base_(msg_base), BV_(nodes_cnt, net), is_psync_(is_psync) {
     state_ = Uninvoked;
 }
 
@@ -35,6 +35,8 @@ bool BinConsensus::process_msg(Message msg) {
         process_bv_broadcast(msg);
     } else if (msg.type == "BinConsensus_AUX") {
         process_AUX(msg);
+    } else if (msg.type == "BinConsensus_COORD" && is_psync_) {
+        process_COORD(msg);
     }
 
     continue_if_ready();
@@ -96,6 +98,14 @@ void BinConsensus::phase_1() {
     state_ = BvBroadcast;
     if (decided_) {
         add_binvalue(round_, est_);
+        rounds_[round_].timer_expired = true;
+    }
+
+    if (is_psync_ && !decided_) {
+        net_.set_timer(10000 + 500 * (round_ + 1), [this]{
+            this->rounds_[this->round_].timer_expired = true;
+            this->continue_if_ready();
+        });
     }
 
     continue_if_ready();
@@ -126,12 +136,67 @@ void BinConsensus::process_bv_broadcast(Message msg) {
     add_binvalue(delivered_data["round"], delivered_data["value"]);
 }
 
+void BinConsensus::process_COORD(Message msg) {
+    DVLOG(6) << net_.get_id() << " " << msg_base_ << " got msg: " << msg;
+
+    if (msg.type != "BinConsensus_COORD" || !is_psync_) {
+        return;
+    }
+
+    if (!msg.data.contains("round") || msg.data["round"] < round_
+        || !msg.data.contains("binvalues")) {
+        return;
+    }
+
+    uint32_t round = msg.data["round"];
+    if ((uint32_t)msg.from != round % nodes_cnt_) {
+        // not real coordinator
+        return;
+    }
+
+    if (rounds_.size() <= round) {
+        rounds_.resize(round + 1);
+    }
+
+    uint32_t bin_values = msg.data["binvalues"];
+    if (rounds_[round].coord == None && (bin_values == Zero || bin_values == One)) {
+        rounds_[round].coord = static_cast<BinValues>(bin_values);
+    }
+}
+
+void BinConsensus::phase_coord() {
+    if (net_.get_id() != round_ % nodes_cnt_) {
+        return;
+    }
+
+    if (rounds_[round_].coord != None) {
+        // already broadcasted coordinator value
+        return;
+    }
+
+    rounds_[round_].coord = rounds_[round_].bin_values;
+
+    json COORD_data(msg_base_);
+    COORD_data["round"] = round_;
+    COORD_data["binvalues"] = rounds_[round_].coord;
+
+    DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_coord broadcast COORD: " << COORD_data;
+
+    net_.broadcast(Message("BinConsensus_COORD", COORD_data));
+}
 
 void BinConsensus::phase_2() {
     // broadcast AUX[ri](bin_values_[round_]);
     json AUX_data(msg_base_);
     AUX_data["round"] = round_;
     AUX_data["binvalues"] = rounds_[round_].bin_values;
+
+    if (is_psync_ && !decided_) { 
+        uint32_t coord = rounds_[round_].coord;
+        if (coord != None && ((coord & rounds_[round_].bin_values) == coord)) {
+            AUX_data["binvalues"] = rounds_[round_].coord;
+        }
+    }
 
     DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_2 broadcast AUX: " << AUX_data;
 
@@ -176,7 +241,7 @@ void BinConsensus::process_AUX(Message msg) {
 
 
 void BinConsensus::phase_3(BinValues values) {
-    uint32_t b = round_ % 2;
+    int b = (round_ + 1) % 2;
 
     DVLOG(5) << net_.get_id() << " " << msg_base_ << " phase_3" << std::endl;
 
@@ -205,7 +270,15 @@ void BinConsensus::phase_3(BinValues values) {
 void BinConsensus::continue_if_ready() {
     auto& round = rounds_[round_];
     if (state_ == BvBroadcast && round.bin_values != None) {
-        phase_2();
+        if (!is_psync_) {
+            phase_2();
+            return;
+        }
+
+        phase_coord();
+        if (round.timer_expired) {
+            phase_2();
+        }
     } else if (state_ == Broadcast) {
         if (round.received_AUXes.size() < nodes_cnt_ - (nodes_cnt_ - 1) / 3) {
             return;
@@ -240,6 +313,40 @@ void BinConsensus::set_decision() {
 
     DVLOG(5) << net_.get_id() << " " << msg_base_ << " DECIDED round: " 
              << res_metrics_.rounds_number << " decision: " << get_decision() << std::endl;
+}
+
+BinConsensusMetrics BinConsensus::get_metrics() {
+    assert(state_ == Consensus);
+    return res_metrics_;
+}
+
+void BinConsensus::execute_byzantine(Role role) {
+    state_ = Consensus;
+    if (role == FailStop) {
+        return;
+    }
+
+    json EST_data(msg_base_), AUX_data(msg_base_), COORD_data(msg_base_);
+
+    for (uint32_t round = 0; round < 10; ++round) {
+        EST_data["round"] = round;
+        for (uint32_t value = 0; value < (role == TxRejector ? 1 : 2); ++value) {
+            EST_data["value"] = value;
+            BV_.broadcast(EST_data);
+        }
+
+        if (is_psync_ && net_.get_id() == round % nodes_cnt_) {
+            COORD_data["round"] = round;
+            for (uint32_t value = 0; value < (role == TxRejector ? 1 : 2); ++value) {
+                COORD_data["binvalues"] = value;
+                net_.broadcast(Message("BinConsensus_COORD", COORD_data));
+            }
+        }
+
+        AUX_data["round"] = round;
+        AUX_data["binvalues"] = (role == TxRejector ? Zero : Both);
+        net_.broadcast(Message("BinConsensus_AUX", AUX_data));
+    }
 }
 
 

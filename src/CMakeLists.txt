@@ -8,6 +8,7 @@ set(HEADERS     core/message.hpp
                 consensus/ReliableBroadcast.hpp
                 consensus/BinConsensus.hpp
                 consensus/DBFT.hpp
+                node/role.hpp
                 node/node.hpp
                 simulation/simulation.hpp
                 simulation/structs.hpp)

@@ -5,6 +5,7 @@
 #include <optional>
 #include <boost/dynamic_bitset.hpp>
 
+#include "../node/role.hpp"
 #include "../core/transaction.hpp"
 #include "../core/chain.hpp"
 #include "BinConsensus.hpp"
@@ -25,7 +26,8 @@ public:
          uint32_t nodes_cnt,
          uint32_t batch_size,
          INetManager& net,
-         TransactionPool& pool);
+         TransactionPool& pool,
+         Role role = Fair);
 
     bool process_msg(Message msg);
     Block get_block(Chain& chain);
@@ -35,11 +37,13 @@ private:
     bool process_await_proposals(Message msg);
     void check_if_consensus();
     void set_metrics();
+    void set_rounds_number();
+    void execute_byzantine(Role role);
 
 private:
-    using TimePoint = std::chrono::time_point<
-                        std::chrono::system_clock,
-                        std::chrono::duration<long long, std::ratio<1, 1000000>>>;
+    // using TimePoint = std::chrono::time_point<
+    //                     std::chrono::system_clock,
+    //                     std::chrono::duration<long long, std::ratio<1, 1000000>>>;
 
     static const size_t MAX_BATCH = 10;
 
@@ -47,10 +51,11 @@ private:
     uint32_t nodes_cnt_;
     uint32_t batch_size_{MAX_BATCH};
     INetManager& net_;
+    Role role_;
 
-    TimePoint start_time_;
+    // TimePoint start_time_;
     ConsensusMetrics res_metrics_;
-    std::vector<std::optional<Transaction>> proposals_;
+    std::vector<std::vector<Transaction>> proposals_;
     State state_;
     ReliableBroadcast RB_;
     std::vector<BinConsensus> bin_cons_;

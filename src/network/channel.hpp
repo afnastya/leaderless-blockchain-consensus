@@ -1,11 +1,13 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <glog/logging.h>
 #include <boost/asio.hpp>
 #include <boost/fiber/buffered_channel.hpp>
 #include <optional>
 #include <random>
+#include <deque>
 
 #include "../core/message.hpp"
 
@@ -20,6 +22,8 @@ public:
     virtual std::optional<Message> receive() = 0;
     virtual void handle_messages() = 0;
     virtual void stop() = 0;
+    virtual void set_timer(uint32_t, std::function<void()>) = 0;
+    virtual void set_invasion_data(bool, uint32_t) = 0; // InvasionConfig?
     virtual ~IChannel() = default;
 
 public:
@@ -113,6 +117,13 @@ public:
         this->is_stopped_ = true;
     }
 
+    void set_timer(uint32_t, std::function<void()> handler) override {
+        handler();
+    }
+
+    void set_invasion_data(bool, uint32_t) override {
+    }
+
 
 private:
     const static uint32_t SIZE = 1 << 17;
@@ -165,7 +176,9 @@ public:
                 return;
             }
 
-            handler_(msg);
+            if (!byzantine_invasion(msg)) {
+                handler_(msg);
+            }
             --size_;
         });
     }
@@ -196,6 +209,21 @@ public:
         }
     }
 
+    void set_timer(uint32_t timeout, std::function<void()> handler) override {
+        using namespace asio;
+        steady_timer* timer = new steady_timer(ctx_);
+        timer->expires_after(std::chrono::microseconds(timeout));
+        timer->async_wait([timer, handler = std::move(handler)] (const boost::system::error_code&) {
+            delete timer;
+            handler();
+        });
+    }
+
+    void set_invasion_data(bool invasion, uint32_t nodes_cnt) override {
+        invasion_ = invasion;
+        nodes_cnt_ = nodes_cnt;
+    }
+
 private:
     std::chrono::microseconds get_delay() {
         static std::mt19937 gen = std::mt19937(std::random_device()());
@@ -206,8 +234,53 @@ private:
         return std::chrono::microseconds(rand_engine(gen));
     }
 
+    bool byzantine_invasion(Message msg) {
+        if (!invasion_) {
+            return false;
+        }
+
+        assert(nodes_cnt_ != 0);
+        uint32_t f = (nodes_cnt_ - 1) / 3;
+        auto from_f_to_2f = [f](uint32_t value) { return value >= f && value < 2 * f; };
+        if (!from_f_to_2f(msg.to)) {
+            return false;
+        }
+
+        if (msg.type == "RB_READY") {
+            if (msg.data.contains("index") && from_f_to_2f(msg.data["index"])) {
+                VLOG(5) << "EXTRACTED " << msg << std::endl;
+                extracted_msgs.push_back(msg);
+                return true;
+            }
+        } else if (msg.type == "BinConsensus_AUX") {
+            if (!from_f_to_2f(msg.from)) {
+                return false;
+            }
+
+            if (!msg.data.contains("bin_con_id") || !from_f_to_2f(msg.data["bin_con_id"])) {
+                return false;
+            }
+
+            VLOG(5) << "BYZ_INVASION: got msg: " << msg.from << " " << msg.to << msg << " START TO EXTRACT" << std::endl;
+            while (!extracted_msgs.empty()) {
+                auto extracted = extracted_msgs.front();
+                extracted_msgs.pop_front();
+                boost::asio::post(ctx_,[this, extracted = std::move(extracted)] {
+                    VLOG(5) << "EXTRACTED MSG IS PROCESSED" << std::endl;
+                    handler_(extracted);
+                });
+            }
+        }
+        return false;
+    }
+
 private:
-    static const uint32_t AVG_DELAY = 5000;
+    static const uint32_t AVG_DELAY = 10000;
     asio::io_context ctx_;
     asio::executor_work_guard<asio::io_context::executor_type> ctx_guard_;
+
+    // invasion data
+    bool invasion_{false};
+    uint32_t nodes_cnt_{0};
+    std::deque<Message> extracted_msgs;
 };

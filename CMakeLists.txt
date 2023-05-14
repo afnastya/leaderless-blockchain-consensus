@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.2)
 set(PROJECT_NAME "blockchain")
 project(${PROJECT_NAME})
 
-find_package(Boost COMPONENTS program_options fiber system thread dynamic_bitset)
+find_package(Boost COMPONENTS program_options fiber system thread)
 include_directories( ${Boost_INCLUDE_DIRS} )
 
 find_package(nlohmann_json 3.2.0 REQUIRED)

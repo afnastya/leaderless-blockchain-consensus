@@ -2,7 +2,9 @@
 
 #include <vector>
 #include <unordered_set>
+#include <cassert>
 
+#include "../node/role.hpp"
 #include "../core/message.hpp"
 #include "../network/netmanager.hpp"
 #include "../consensus/ReliableBroadcast.hpp"
@@ -57,16 +59,21 @@ private:
 
     struct RoundData {
         BinValues bin_values{None};
+        BinValues coord{None};      // used only if is_psync_ == true
+        bool timer_expired{false};  // used only if is_psync_ == true
         uint32_t values[4] = {0, 0, 0, 0};
         std::unordered_set<uint32_t> received_AUXes;
     };
 
 public:
-    BinConsensus(uint32_t nodes_cnt, INetManager& net, json msg_base = {});
+    BinConsensus(uint32_t nodes_cnt, INetManager& net, json msg_base = {}, bool is_psync = true);
     void bin_propose(uint32_t value);
     bool process_msg(Message msg);
     bool reached_consensus();
     bool get_decision();
+    BinConsensusMetrics get_metrics();
+
+    void execute_byzantine(Role role);
 
 private:
     void inc_round(uint32_t new_est);
@@ -74,10 +81,13 @@ private:
 
     // process msg from BvBroadcast
     void process_bv_broadcast(Message msg);
+    // process msg from coordinator
+    void process_COORD(Message msg);
     // process msg from broadcast
     void process_AUX(Message msg);
 
     void phase_1();
+    void phase_coord();
     void phase_2();
     void phase_3(BinValues values_);
     // function determines, whether algorithm can get to the next phase
@@ -90,10 +100,13 @@ private:
     INetManager& net_;
     json msg_base_; // info, how to get to this BinConsensus instance (block_id, bin_con_id)
 
-    // ReliableBroadcast RB_;
     BVbroadcast BV_;
     BinConsensusMetrics res_metrics_;
     bool decided_{false};
+
+    /*  true - using PSYNC Algorithm, that adds weak coordinators 
+        false - just original BA algorithm, but without common coin, no weak coordinators */
+    bool is_psync_{false};
 
     State state_{Uninvoked};
     uint32_t round_{0};

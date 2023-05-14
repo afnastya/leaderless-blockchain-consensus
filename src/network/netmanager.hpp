@@ -19,6 +19,7 @@ public:
     virtual void broadcast(Message msg) = 0;
     virtual void close() = 0;
     virtual void stop_receive() = 0;
+    virtual void set_timer(uint32_t, std::function<void()>) = 0;
     virtual ~INetManager() = default;
 };
 
@@ -29,8 +30,9 @@ public:
         uint32_t id,
         IChannel& channel,
         INetwork& net,
-        std::function<void(Message)> handler = [](Message) {}
-    ) : id_(id), channel_(channel), net_(net) {
+        std::function<void(Message)> handler = [](Message) {},
+        bool net_invasion = false
+    ) : id_(id), channel_(channel), net_(net), net_invasion_(net_invasion) {
 
         channel_.set_handler([handler = std::move(handler)](Message msg) {
             DVLOG(7) << msg.to << " <-- " << msg.from << " " << msg << std::endl;
@@ -72,6 +74,9 @@ public:
     }
 
     void handle_messages() override {
+        if (net_invasion_) {
+            channel_.set_invasion_data(true, nodes_.size());
+        }
         channel_.handle_messages();
     }
 
@@ -93,9 +98,14 @@ public:
         channel_.close();
     }
 
+    void set_timer(uint32_t timeout, std::function<void()> handler) override {
+        channel_.set_timer(timeout, handler);
+    }
+
 private:
     uint32_t id_;
     IChannel& channel_;
     INetwork& net_;
+    bool net_invasion_;
     std::unordered_map<uint32_t, Sender> nodes_;
 };
